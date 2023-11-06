@@ -57,19 +57,21 @@ Function Export-AzSentinelConfigurationToWord($fileName) {
         #Load the list of all  solutions
         $url = $baseUrl + "contentProductPackages" + $apiVersion
         $allSolutions = (Invoke-RestMethod -Method "Get" -Uri $url -Headers $authHeader ).value
-        # We should be able to get the deployed solutions using the "ContentPackages" call, but doesn't quite work right
-        # so I determine the installed solutions but those that have an installedVersion field.
         $solutions = $allSolutions | Where-Object { $null -ne $_.properties.installedVersion }
 
-        #Load the list of all the installed  templates
+        #Load the list of all the templates
         $url = $baseUrl + "contentProductTemplates" + $apiVersion
         $solutionTemplates = (Invoke-RestMethod -Method "Get" -Uri $url -Headers $authHeader ).value
+
+        #Load the list of the installed templates
+        $url = $baseUrl + "contentTemplates" + $apiVersion
+        $installedTemplates = (Invoke-RestMethod -Method "Get" -Uri $url -Headers $authHeader ).value
 
         #Load all the metadata entries
         $url = $baseUrl + "metadata" + $apiVersion
         $metadata = (Invoke-RestMethod -Method "Get" -Uri $url -Headers $authHeader ).value
 
-        #Load all the alert rules entries
+        #Load all the metadata entries
         $url = $baseUrl + "alertrules" + $apiVersion
         $alertRules = (Invoke-RestMethod -Method "Get" -Uri $url -Headers $authHeader ).value
 
@@ -94,7 +96,7 @@ Function Export-AzSentinelConfigurationToWord($fileName) {
         $selection.InsertBreak(7)   #page break
 
         #Add all the solutions
-        Add-AllSolutions $solutions $selection 
+        Add-AllSolutions $solutions $installedTemplates $selection 
         $selection.InsertBreak(7)   #page break
 
         #The REST API to get the templates will only show those templates that were installed using the solution
@@ -589,16 +591,16 @@ Function Add-TitlePage ($selection) {
     $text = Get-Date
     $selection.TypeText("Created: " + $text)
     $selection.TypeParagraph()
+    $selection.TypeParagraph()     
+    $selection.TypeText("Resource Group: " + $ResourceGroupName)   
     $selection.TypeParagraph()
-    $selection.TypeText("Resource Group: " + $resourceGroupName)
-    $selection.TypeParagraph()
-    $selection.TypeText("Workspace Name: " + $workspaceName)
-    $selection.TypeParagraph()
+    $selection.TypeParagraph()     
+    $selection.TypeText("Workspace Name: " + $WorkSpaceName)
 
     $Table = $doc.Tables.add($selection.Range, 1, 1)
     $Table.cell(1, 1).range.Bold = 1
     $Table.cell(1, 1).range.text = ""
-$selection.endKey(6) | Out-Null
+    $selection.endKey(6) | Out-Null
     $selection.TypeParagraph()
 }
 
@@ -695,7 +697,7 @@ Function Add-AllWorkbooks ($solutions, $solutionTemplates, $metadata, $selection
     Write-Host ""
 }
 
-Function Add-AllSolutions($solutions, $selection) {
+Function Add-AllSolutions($solutions, $installedTemplates, $selection) {
     $selection.Style = "Heading 1"
     $selection.TypeText("Installed Solutions")
     $selection.TypeParagraph()
@@ -711,7 +713,7 @@ Function Add-AllSolutions($solutions, $selection) {
         # if ($count -le 70) {
         #Write-Host $count  $solution.properties.displayName
         Write-Host "." -NoNewline
-        Add-SingleSolution $solution $solutionTemplates $selection     #Load one solution
+        Add-SingleSolution $solution $installedTemplates $selection     #Load one solution
         $selection.TypeText(" ")
         $selection.TypeParagraph()
         #$selection.InsertBreak(7)   #page break
@@ -725,7 +727,7 @@ Function Add-AllSolutions($solutions, $selection) {
 }
 
 #Work with a single solutions
-Function Add-SingleSolution ($solution, $solutionTemplates, $selection) {
+Function Add-SingleSolution ($solution, $installedTemplates, $selection) {
 
     try {
         #We need to load the solution's template information, which is stored in a separate file.  Note that
@@ -734,7 +736,7 @@ Function Add-SingleSolution ($solution, $solutionTemplates, $selection) {
         # $solutionData = (Invoke-RestMethod -Method "Get" -Uri $uri -Headers $authHeader ).value
         #Load the solution's data
 
-        $singleSolutionTemplates = $solutionTemplates | Where-Object { $_.properties.packageId -eq $solution.name }
+        $singleSolutionTemplates = $installedTemplates | Where-Object { $_.properties.packageId -eq $solution.properties.contentId }
         #Output the Solution information into the Word Document
         $selection.Style = "Heading 2"
         $selection.TypeText($solution.properties.displayName)
