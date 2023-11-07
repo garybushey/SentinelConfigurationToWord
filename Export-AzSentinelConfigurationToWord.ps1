@@ -736,7 +736,6 @@ Function Add-SingleSolution ($solution, $installedTemplates, $selection) {
         # $solutionData = (Invoke-RestMethod -Method "Get" -Uri $uri -Headers $authHeader ).value
         #Load the solution's data
 
-        $singleSolutionTemplates = $installedTemplates | Where-Object { $_.properties.packageId -eq $solution.properties.contentId }
         #Output the Solution information into the Word Document
         $selection.Style = "Heading 2"
         $selection.TypeText($solution.properties.displayName)
@@ -746,6 +745,11 @@ Function Add-SingleSolution ($solution, $installedTemplates, $selection) {
         $selection.TypeText("Version: ");
         $selection.Font.Bold = $false
         $selection.TypeText($solution.properties.installedVersion);
+        $selection.TypeParagraph()
+        $selection.Font.Bold = $true
+        $selection.TypeText("Type: ");
+        $selection.Font.Bold = $false
+        $selection.TypeText($solution.properties.contentKind);
         $selection.TypeParagraph()
         #We are using the description rather than the Htmldescription since the Htmldescription can contain HTML formatting that
         #I cannot determine who to translate into what word can understand
@@ -759,60 +763,111 @@ Function Add-SingleSolution ($solution, $installedTemplates, $selection) {
             $selection.TypeText($solution.properties.description);
         }
         $selection.TypeParagraph()
-    
-        #The hardest part here was determining how each of the various elements were stored in the solutions
-        #Load the dataconnectors
-        $dataConnectors = $singleSolutionTemplates | Where-Object { $_.properties.contentKind -eq "DataConnector" }
-        #Load the workbooks
-        $workbooks = $singleSolutionTemplates | Where-Object { $_.properties.contentKind -eq "Workbook" }
-        #Load the Analytic Rules
-        $ruleTemplates = $singleSolutionTemplates | Where-Object { $_.properties.contentKind -eq "AnalyticsRule" }
-        #Load the Hunting Queries
-        $huntingQueries = $singleSolutionTemplates | Where-Object { $_.properties.contentKind -eq "HuntingQuery" }
-        #Load the Watchlists
-        $azureFunctions = $singleSolutionTemplates | Where-Object { $_.properties.contentKind -eq "AzureFunction" }
-        #Load the Playbooks
-        $playBooks = $singleSolutionTemplates | Where-Object { $_.properties.contentKind -eq "Playbook" }
-        #Load the Parsers
-        $parsers = $singleSolutionTemplates | Where-Object { $_.properties.contentKind -eq "Parser" }
-        #Load the Custom Connectors
-        $customConnectors = $singleSolutionTemplates | Where-Object { $_.properties.contentKind -eq "Parser" }
 
+        $dataConnectors = 0
+        $workbooks = 0
+        $ruleTemplates = 0
+        $huntingQueries = 0
+        $azureFunctions = 0
+        $playBooks = 0
+        $parsers = 0
+    
+        if ($solution.properties.contentKind -eq "StandAlone") {
+            switch ($solution.properties.dependencies.criteria.kind) {
+                "DataConnector" { $dataConnectors++ }
+                "Workbook" { $workbooks++ }
+                "AnalyticsRule" { $ruleTemplates++ }
+                "HuntingQuery" { $huntingQueries++ }
+                "AzureFunction" { $azureFunctions++ }
+                "Playbook" { $playBooks++ }
+                "Parser" { $parsers++ }
+            }
+        }
+        else {
+            $contentId = $solution.properties.contentId
+            #try to load using the new way.
+            $url = $baseUrl + "contentTemplates" + $apiVersion
+            $url += "&%24filter=(properties%2FpackageId%20eq%20'$contentId')%20and%20" +
+            "(properties%2FcontentKind%20eq%20'AnalyticsRule'%20or%20properties%2FcontentKind%20eq%20'DataConnector'%20or%20properties" +
+            "%2FcontentKind%20eq%20'HuntingQuery'%20or%20properties%2FcontentKind%20eq%20'Playbook'%20or%20properties%2FcontentKind" +
+            "%20eq%20'Workbook'%20or%20properties%2FcontentKind%20eq%20'Parser')"
+            $singleSolutionTemplates = (Invoke-RestMethod -Method "Get" -Uri $url -Headers $authHeader ).value
+            if ("" -eq $singleSolutionTemplates) {
+                #This solution was installed before the switch to solutions so we need a different way to load the data
+                $body = @{
+                    "subscriptions" = @(
+                        "$SubscriptionId"
+                    )
+                    "query"         = "Resources | where type =~ 'Microsoft.Resources/templateSpecs/versions' " +
+                    "| where tags['hidden-sentinelWorkspaceId'] =~ '/subscriptions/$SubscriptionId/resourcegroups/$resourceGroupName/providers/microsoft.operationalinsights/workspaces/$workspaceName' " +
+                    "| extend version = name | extend parsed_version = parse_version(version)  " +
+                    "| extend content_kind = tags['hidden-sentinelContentType'] " +
+                    "| extend resources = parse_json(parse_json(parse_json(properties).template).resources)  " +
+                    "| extend metadata = parse_json(resources[array_length(resources)-1].properties) " +
+                    "| extend contentId=tostring(metadata.contentId) " +
+                    "| where metadata.source.sourceId == '$contentId'  " +
+                    "| extend resource = parse_json(resources[0].properties)  " +
+                    "| extend displayName = case(content_kind == `"DataConnector`", resource.connectorUiConfig['title'], content_kind == `"Playbook`", properties['template']['metadata']['title'] , resource.displayName)  " +
+                    "| where content_kind in ('Workbook', 'AnalyticsRule', 'DataConnector', 'Playbook', 'Parser', 'HuntingQuery')  " +
+                    "| extend additional_data = case(content_kind == 'Parser', resource['functionAlias'], '')  " +
+                    "| summarize arg_max(id, parsed_version, version, displayName, content_kind, properties, additional_data) by contentId, tostring(content_kind) " +
+                    "| project id, contentId, version, displayName, content_kind, additional_data"
+                }
+                $url = "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2019-04-01"
+                $singleSolutionTemplates = Invoke-RestMethod -Uri $url -Method POST -Headers $authHeader -Body ($body | ConvertTo-Json -EnumsAsStrings -Depth 50)
+                foreach ($row in $singleSolutionTemplates.data.rows) {
+                    switch ($row[4]) {
+                        "DataConnector" { $dataConnectors++ }
+                        "Workbook" { $workbooks++ }
+                        "AnalyticsRule" { $ruleTemplates++ }
+                        "HuntingQuery" { $huntingQueries++ }
+                        "AzureFunction" { $azureFunctions++ }
+                        "Playbook" { $playBooks++ }
+                        "Parser" { $parsers++ }
+                    }
+                }
+            }
+            else {
+                $dataConnectors = ($singleSolutionTemplates | Where-Object { $_.properties.contentKind -eq "DataConnector" }).count
+                $workbooks = ($singleSolutionTemplates | Where-Object { $_.properties.contentKind -eq "Workbook" }).count
+                $ruleTemplates = ($singleSolutionTemplates | Where-Object { $_.properties.contentKind -eq "AnalyticsRule" }).count
+                $huntingQueries = ($singleSolutionTemplates | Where-Object { $_.properties.contentKind -eq "HuntingQuery" }).count
+                $azureFunctions = ($singleSolutionTemplates | Where-Object { $_.properties.contentKind -eq "AzureFunction" }).count
+                $playBooks = ($singleSolutionTemplates | Where-Object { $_.properties.contentKind -eq "Playbook" }).count
+                $parsers = ($singleSolutionTemplates | Where-Object { $_.properties.contentKind -eq "Parser" }).count
+            }
+        }
         #Output the summary line to the word document.  I know this is in a lot of solution's descriptions already
         #but it is in HTML and I cannot figure out how to easily translate it to something Word can understand.
         $selection.Font.Bold = $true
         $selection.TypeText("Data Connectors: ");
         $selection.Font.Bold = $false
-        $selection.TypeText($dataConnectors.count);
+        $selection.TypeText($dataConnectors);
         $selection.Font.Bold = $true
         $selection.TypeText(", Workbooks: ");
         $selection.Font.Bold = $false
-        $selection.TypeText($workbooks.count);
+        $selection.TypeText($workbooks);
         $selection.Font.Bold = $true
         $selection.TypeText(", Analytic Rules: ");
         $selection.Font.Bold = $false
-        $selection.TypeText($ruleTemplates.count);
+        $selection.TypeText($ruleTemplates);
         $selection.Font.Bold = $true
         $selection.TypeText(", Hunting Queries: ");
         $selection.Font.Bold = $false
-        $selection.TypeText($huntingQueries.count);
+        $selection.TypeText($huntingQueries);
         $selection.Font.Bold = $true
         $selection.TypeText(", Azure Functions: ");
         $selection.Font.Bold = $false
-        $selection.TypeText($azureFunctions.count);
+        $selection.TypeText($azureFunctions);
         $selection.Font.Bold = $true
         $selection.TypeText(", Playbooks: ");
         $selection.Font.Bold = $false
-        $selection.TypeText($playBooks.count);
+        $selection.TypeText($playBooks);
         $selection.Font.Bold = $true
         $selection.TypeText(", Parsers: ");
         $selection.Font.Bold = $false
-        $selection.TypeText($parsers.count);
+        $selection.TypeText($parsers);
         $selection.Font.Bold = $true
-        $selection.TypeText(", Custom Logic App Connectors: ");
-        $selection.Font.Bold = $false
-        $selection.TypeText($customConnectors.count);
-    
         $selection.TypeParagraph()
     }
     catch {
